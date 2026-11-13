@@ -5,7 +5,7 @@ from src.utils import repository as repo
 from src.utils.identity import new_id,now
 from src.constants.domain import MAX_ROWS,MAX_STATIONS,MIN_TIME_STEP_HOURS
 
-def summary(item):return {k:v for k,v in item.items() if k!='rows'}|{'row_count':len(item['rows']),'stations':sorted({r['station'] for r in item['rows']}),'observed':sum(r['value'] is not None for r in item['rows']),'missing':sum(r['value'] is None for r in item['rows'])}
+def summary(item):return {k:v for k,v in item.items() if k not in ('rows','current_rows','point_meta','supplement_batches')}|{'row_count':len(item['rows']),'stations':sorted({r['station'] for r in item['rows']}),'observed':sum(r['value'] is not None for r in item['rows']),'missing':sum(r['value'] is None for r in item['rows']),'current_version':item.get('current_version',0),'current_revision':item.get('current_revision',0)}
 def list_datasets():return [summary(x) for x in repo.all_rows('datasets')]
 def detail(id):return repo.get('datasets',id)
 def rename(id,data):
@@ -18,7 +18,7 @@ def parse_value(text):
  return value
 
 def create(data):
- reader=csv.DictReader(io.StringIO(data.csv_text.lstrip('\ufeff')))
+ reader=csv.DictReader(io.StringIO(data.csv_text.lstrip('﻿')))
  if not {'station','time_hour','value'}.issubset(reader.fieldnames or []):raise ValueError('CSV需要station,time_hour,value；空值用空字段/NA/null，truth为可选模拟参考列')
  rows=[];last={}
  for n,r in enumerate(reader,2):
@@ -30,4 +30,8 @@ def create(data):
   except (ValueError,TypeError):raise ValueError(f'第{n}行站点/时间/数值无效；每站时间须严格递增唯一且步长至少1e-6小时')
   last[station]=time;rows.append({'station':station,'time_hour':time,'value':value,'truth':truth})
  if len(rows)<3 or len(last)>MAX_STATIONS:raise ValueError('至少3条观测且最多8个站点')
- item=ObservationDataset(new_id('ds'),data.name,data.source,rows,now());repo.put('datasets',item);return summary(asdict(item))
+ item=ObservationDataset(new_id('ds'),data.name,data.source,rows,now())
+ payload=asdict(item)
+ # 版本化字段：current_rows 为补传合并后的当前生效观测；rows 保持导入原样不动
+ payload.update(current_rows=[dict(r) for r in rows],point_meta={},current_revision=0,current_version=0,supplement_batches=[],updated_at='')
+ repo.put('datasets',payload);return summary(payload)

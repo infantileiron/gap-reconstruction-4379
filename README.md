@@ -6,7 +6,7 @@
 
 上游 `station_gaps_202611.csv` 为3测站、480小时的1440条模拟观测。团队原来跨列手填，长缺口容易过平滑、边缘外推未标、验证时不慎用到被遮挡真值。本工程替代原始核查、遮挡锁定、固定参数重建、误差复核与归档，下游观测组据此安排实际质控讨论。
 
-ObservationDataset原始观测、GapMask连续验证掩码、ReconstructionStudy参数方案、ReconstructionRun运行、GapReview复核、Report报告，全部贯穿存储/API/界面。六页：缺测档案、原始观测、连续遮挡、重建参数、插补与验证、缺口复核。总览和结果共用GapChart与GapSummary。
+ObservationDataset原始观测、GapMask连续验证掩码、ReconstructionStudy参数方案、ReconstructionRun运行、GapReview复核、Report报告，全部贯穿存储/API/界面。补传批次SupplementBatch作为迟到读数/更正值的合并入口与版本留痕。七页：缺测档案、原始观测、补传合并、连续遮挡、重建参数、插补与验证、缺口复核。总览和结果共用GapChart与GapSummary。
 
 ## 快速启动
 
@@ -30,18 +30,37 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 1. 09:00 核查station_gaps_202611.csv，3站各480时点，值为空表示缺失，0仍是有效观测。
 2. 09:05 上传文件，保留文件名；检查每站时间严格递增唯一，单位小时。
-3. 09:10 锁定LP-01第100—111小时的12个原本有值目标作连续遮挡，不把原始缺失纳入验证分母。
-4. 09:15 固定q=0.03读数²/h、r=0.09读数²与P0=10000；空初始均值表示本次训练剩余首观测。
-5. 09:20 Redis排队，独立Python worker分别运行生产重建和遮挡重算，落PostgreSQL与共享结果JSON。
-6. 09:25 对照短/长/首尾缺口，PCHIP边缘留空，RTS仅称离线重建，原始观测不覆盖。
-7. 09:30 查看共有内点MAE、各方法覆盖数量，以及基于P+R的有噪观测区间覆盖；状态区间P单独展示。
-8. 09:40 提交复核，工程师批准后生成报告，观察员下载完整原始/补值/方差/遮挡记录CSV。
+3. 09:08 测站补传迟到读数与更正值：在“补传合并”页按来源修订号提交，同版异值整批拒绝、空值不覆盖、显式撤回才变缺失；重复补传幂等，数据集版本v0→v1→v2。
+4. 09:10 锁定LP-01第100—111小时的12个原本有值目标作连续遮挡，不把原始缺失纳入验证分母。
+5. 09:15 固定q=0.03读数²/h、r=0.09读数²与P0=10000；空初始均值表示本次训练剩余首观测。
+6. 09:20 Redis排队，独立Python worker分别运行生产重建和遮挡重算，落PostgreSQL与共享结果JSON；运行固定发起时数据版本，排队任务不偷用补传新值。
+7. 09:25 对照短/长/首尾缺口，PCHIP边缘留空，RTS仅称离线重建，原始观测不覆盖。
+8. 09:30 查看共有内点MAE、各方法覆盖数量，以及基于P+R的有噪观测区间覆盖；状态区间P单独展示。
+9. 09:40 提交复核，工程师批准后生成报告，观察员下载带数据版本戳的完整原始/补值/方差/遮挡记录CSV。
 
 ## 输入、缺失与掩码
 
 CSV必需station,time_hour,value；可选truth为模拟完整带噪观测参考。空字段、NA、null为缺失；NaN/Inf拒绝，不把缺失当0。每站时间严格递增唯一、至少约1e-6小时步长，允许不规则时间；时间范围[0,1e7]小时，读数绝对值≤1e6，最多5000条/8站。短行、重复/倒序时间明确422。
 
 truth参考列保留供模拟数据审阅，但不进入任何训练、初始化、参数估计或验证分母。验证真值只取掩码目标原本有值的value。连续掩码端点须匹配实际时刻、包含2—48条，区间内任何原始缺失都会拒绝。研究数据与掩码数据必须一致。
+
+## 补传合并与数据版本
+
+整份重导会丢掉原有观测，迟到读数与更正值一律走`POST /supplements`按测站+时刻合并，不新增时点、不改写导入原始`rows`。每个数据集维护`current_rows`（当前生效观测）、`point_meta`（逐点来源留痕）、`current_revision`（已落地最高来源修订号）与`current_version`（单调递增的数据版本）。
+
+- **修订号裁决**：仅当批次来源修订号高于已落地最新修订才可能产生新版本；低于最新修订的旧批次整批拒绝（409）。
+- **同版异值整批拒绝**：同一修订号必须对应同一份内容。同修订号再次提交且任一测站时刻取值不同，整批拒绝并逐点列出`held_value/incoming_value`冲突，已落地值不被污染；拒绝批次仍留痕。
+- **空值不覆盖实测**：value为空/NA/null的记录不改变任何当前值（无论该点缺失还是有实测）。
+- **显式撤回才缺失**：`withdrawn=1/true`或value填`withdraw/撤回`，才把已有实测变回缺失；撤回一个本就缺失的点不产生变化。
+- **迟到读数/更正值**：对缺失点补值记`late_fill`，对已有实测改值记`corrected`，同值重复记`redundant`。
+- **幂等**：同修订号、同内容（忽略顺序）重复补传直接返回原批次（`replayed=true`、HTTP 200），不写新记录、不产生新版本。
+- **并发安全**：合并在数据集行级事务内读改写（PostgreSQL `SELECT … FOR UPDATE`，SQLite `BEGIN IMMEDIATE`写锁），同版并发只有一个胜出，其余整批409，不丢失更新；异常回滚。
+
+每次接受并实际改变数据，`current_version`加一；无变化（空值/重复/noop）版本不动。批次含`data_version_before/after`与逐条`details`，页面可展开合并明细，`GET /datasets/{id}/version-trail`返回版本轨迹。
+
+### 运行固定发起时版本
+
+创建运行时把当时的`current_rows`快照（`input_rows`）连同`data_version/source_revision`持久化到该run。worker执行时只读快照，不读数据集当前值，并校验快照与方案/掩码属于同一数据集。因此补传后旧结果仍可凭快照与含版本字段的SHA256校验和核查，排队中（queued）或在途任务也不会偷用补传后的新值；只有新建运行才采用新版本数据。结果页与归档报告CSV均标注结果所属`data_version/source_revision`。
 
 ## Kalman与RTS离线状态
 
@@ -74,7 +93,7 @@ RTS使用未来已观测值，自动初值也可能位于序列起点之后，�
 | 算法 | Python math/bisect，Kalman/RTS和PCHIP自实现 |
 | 异步与持久化 | Redis7.4 / 独立worker / PostgreSQL16 |
 
-78职责源文件。后端src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}，前端src/{api,stores,types,components/common,hooks,pages,router,utils,constants}。TEXT主键+JSON文本业务表，DDL在backend/migrations/001_initial.sql；advisory lock保护首次并发建表。
+职责源文件。后端src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}，前端src/{api,stores,types,components/common,hooks,pages,router,utils,constants}。TEXT主键+JSON文本业务表（含supplements补传批次表），DDL在backend/migrations/001_initial.sql与002_supplements.sql；advisory lock保护首次并发建表，补传合并用行级FOR UPDATE/写锁防丢失更新。补传裁决纯函数在services/supplement_merge.py（不碰数据库，可单测），事务与持久化在services/supplement.py。
 
 枚举：后端src/constants/enums.py角色/状态及src/constants/domain.py配额/区间常数；前端src/constants/enums.ts。环境DATABASE_URL、REDIS_URL、JWT_SECRET、SEED_DEMO、TASK_MODE、ARTIFACT_DIR及端口/口令见.env.example。
 
@@ -84,7 +103,7 @@ Seed固定2309，480小时×3站=1440条，LP-01有41个短/长/边缘缺口；�
 
 ## 已知边界
 
-模拟读数不代替环境质控；局部水平在长缺口/周期变化下可能过平滑，固定q/r需要业务核查。PCHIP无概率区间，不输出虚构覆盖率。没有参数自动估计或真实在线预测。Redis出队后强杀无自动重投，需要重提；JSON载荷无多人乐观锁和迁移回滚。默认账号仅本地演示。
+模拟读数不代替环境质控；局部水平在长缺口/周期变化下可能过平滑，固定q/r需要业务核查。PCHIP无概率区间，不输出虚构覆盖率。没有参数自动估计或真实在线预测。Redis出队后强杀无自动重投，需要重提；JSON载荷无迁移回滚。补传只合并既有测站时刻、不新增时点，修订号由上游来源提供，系统不自动分配。默认账号仅本地演示。
 
 真实容器、HTTP、独立手算oracle、浏览器与截图在批次test-artifacts/gb-2309，源码不含测试截图/日志/报告。
 

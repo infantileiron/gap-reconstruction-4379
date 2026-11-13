@@ -37,3 +37,15 @@ class ReportInput(InputModel):
  run_id:str
  review_id:str
  title:str=Field(min_length=2,max_length=100)
+class SupplementItem(InputModel):
+ station:str=Field(min_length=1,max_length=30)
+ time_hour:float=Field(ge=0,le=10000000)
+ value:float|None=Field(default=None,ge=-1000000,le=1000000)
+ withdrawn:bool=False
+class SupplementInput(InputModel):
+ dataset_id:str
+ source_revision:int=Field(gt=0,le=2147483647)
+ name:str=Field(min_length=2,max_length=100)
+ note:str=Field(default='',max_length=500)
+ items:list[SupplementItem]|None=Field(default=None,min_length=1,max_length=5000)
+ csv_text:str=Field(default='',max_length=1800000)

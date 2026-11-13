@@ -51,3 +51,22 @@ class Report:
  review_id:str
  title:str
  created_at:str=''
+@dataclass
+class SupplementBatch:
+ id:str
+ dataset_id:str
+ name:str
+ source_revision:int
+ status:str='applied'
+ note:str=''
+ reject_reason:str=''
+ reject_detail:list[dict]=field(default_factory=list)
+ item_count:int=0
+ change_count:int=0
+ items:list[dict]=field(default_factory=list)
+ details:list[dict]=field(default_factory=list)
+ data_version_before:int=0
+ data_version_after:int=0
+ actor:str=''
+ replayed:bool=False
+ created_at:str=''
